@@ -1,0 +1,372 @@
+/*******************************
+***** SECTION 1 - OPTIONS *****
+*******************************/
+
+options { JAVA_UNICODE_ESCAPE = true; NODE_PREFIX = "AST"; MULTI=true; VISITOR = true; }
+
+/*********************************
+***** SECTION 2 - USER CODE *****
+*********************************/
+
+PARSER_BEGIN(CCALChecker)
+    import java.util.*;
+    public class CCALChecker {
+        static Table t = null;
+        static HashMap<String, ASTfunction> functionTable = new HashMap();
+        public static void main(String args[]) {
+            CCALChecker interpreter;
+
+            if (args.length == 0) {
+                System.out.println("CCALChecker: Reading from standard input...");
+                interpreter = new CCALChecker(System.in);
+            } else if (args.length == 1) {
+                System.out.println("CCALChecker: Reading from file " + args[0] + "...");
+                try {
+                    interpreter = new CCALChecker(new java.io.FileInputStream(args[0]));
+                } catch (java.io.FileNotFoundException e) {
+                    System.out.println("CCALChecker: File " + args[0] + " not found.");
+                    return;
+                }
+            } else {
+                System.out.println("CCALChecker: Usage is one of:");
+                System.out.println(" java CCALChecker < inputfile");
+                System.out.println("OR");
+                System.out.println(" java CCALChecker inputfile");
+                return;
+            }
+
+            try {
+             SimpleNode program = interpreter.program();
+             if(!(Boolean)program.jjtAccept(new DeclarationCheckerVisitor(), null)) { throw new RuntimeException("Program contains undeclared variables.");};
+             program.jjtAccept(new TypeCheckerVisitor(), null);
+             program.jjtAccept(new TACPrintVisitor(), null);
+            } catch (ParseException e) {
+                System.out.println(e.getMessage());
+                System.out.println("CCALChecker: Encountered errors during parse.");
+            }
+        }
+     }
+ PARSER_END(CCALChecker)
+
+
+ /*****************************************
+ ***** SECTION 3 - TOKEN DEFINITIONS *****
+ *****************************************/
+ TOKEN_MGR_DECLS :
+ {
+ static int commentNesting = 0;
+ }
+
+  SKIP : /* COMMENTS */
+  {
+  "/*" { commentNesting++; } : IN_COMMENT
+  }
+
+  SKIP :
+  {
+      "//" {} : IN_SINGLE_LINE_COMMENT
+  }
+
+  <IN_COMMENT> SKIP :
+  {
+  "/*" { commentNesting++; }
+  | "*/" { commentNesting--;
+  if (commentNesting == 0)
+      SwitchTo(DEFAULT);
+  }
+  | <~[]>
+  }
+
+  <IN_SINGLE_LINE_COMMENT> SKIP :
+  {
+       "\r" : DEFAULT
+     | "\n" : DEFAULT
+     | <~[]>
+  }
+
+SKIP : /*** newlines ***/
+ {
+       " "
+     | "\n"
+     | "\t"
+     | "\r"
+     | "\f"
+ }
+
+ TOKEN [IGNORE_CASE] : /* Keywords and punctuation */
+ {
+     //RESERVED WORDS
+      < VAR : "var" >
+    | < CONST : "const" >
+    | < RETURN : "return" >
+    | < INTEGER : "integer" >
+    | < BOOLEAN : "boolean" >
+    | < VOID : "void" >
+    | < MAIN : "main" >
+    | < IF : "if" >
+    | < ELSE : "else" >
+    | < TRUE : "true" >
+    | < FALSE : "false" >
+    | < WHILE : "while" >
+    | < BEGIN : "begin" >
+    | < END : "end" >
+    | < IS : "is" >
+    | < _SKIP : "skip">
+
+     //BIGRAM TOKENS
+     | <EQUALITY : "==" >
+     | < LTE : "<=">
+     | < GTE : ">=" >
+     | < NE : "!=" >
+     | < ASSIGN : ":=" >
+     | < OR : "||">
+     | < AND : "&&">
+
+     //SINGLE CHAR TOKENS
+     | < SEMIC : ";" >
+     | < LBR : "(" >
+     | < RBR : ")" >
+     | < COMMA : "," >
+     | < PLUS_SIGN : "+" >
+     | < MINUS_SIGN : "-" >
+     | < MULT_SIGN : "*" >
+     | < DIV_SIGN : "/" >
+     | < COLON : ":">
+     | < EQUALS : "=">
+     | < LT : "<">
+     | < GT : ">" >
+     | < TILDE : "~">
+     | < NOT : "!" >
+}
+
+TOKEN [IGNORE_CASE]: /* Numbers and identifiers */
+ {
+ < INTEGER_LITERAL : (("0")|((<MINUS_SIGN>)?(<NON_ZERO_DIGIT>)((<DIGIT>)?)+)) >
+ | < ID : (<LETTER>)((<LETTER>|<UNDERSCORE>|<DIGIT>)+)? >
+ | < #UNDERSCORE : "_" >
+ | < #LETTER : ["a" - "z", "A" - "Z"] >
+ | < #DIGIT : ["0"-"9"] >
+ | < #NON_ZERO_DIGIT : ["1"-"9"] >
+ }
+
+ TOKEN : /* Anything not recognised so far */
+ {
+ < OTHER : ~[] >
+ }
+
+ /***********************************
+ ***** SECTION 4 - THE GRAMMAR *****
+ ***********************************/
+
+ASTprogram program() #program() :
+{}
+{
+    decl_list(jjtThis) function_list()  main_func() {jjtThis.value = new FuncTableAndTable(CCALChecker.functionTable, CCALChecker.t); return jjtThis;}
+}
+
+void decl_list(SimpleNode scope) #decl_list(>0):
+{}
+{
+      decl(scope) <SEMIC> decl_list_cotd(scope) {}
+      | {}
+}
+
+void decl_list_cotd(SimpleNode scope) #void:
+{}
+{
+      decl(scope) <SEMIC> decl_list_cotd(scope) {}
+    | {}
+}
+
+void decl( SimpleNode scope) #void :
+{}
+{
+       var_decl(scope)
+    |  const_decl(scope)
+}
+
+void var_decl( SimpleNode scope) #var_decl :
+{String name; String type_id;}
+{
+    <VAR> name = identifier() <COLON> type_id = type() {CCALChecker.t = CCALChecker.t.update(CCALChecker.t, scope, name, type_id);}
+}
+
+void const_decl(SimpleNode scope) #const_decl :
+{String name; String type_id;}
+{
+    <CONST> name = identifier() <COLON> type_id = type() <EQUALS> expression() {CCALChecker.t = CCALChecker.t.update(CCALChecker.t, scope, name, type_id);}
+}
+
+String identifier() #identifier :
+{ Token nameToken; }
+{
+    nameToken = <ID> {jjtThis.value = nameToken.image; return (String)(jjtThis.value);}
+}
+
+FuncTableAndTable function_list() #function_list :
+{
+}
+{
+      function() {} function_list_cont() {jjtThis.value = new FuncTableAndTable(CCALChecker.functionTable, CCALChecker.t); return (FuncTableAndTable) jjtThis.value; }
+    | {jjtThis.value = new FuncTableAndTable(CCALChecker.functionTable, CCALChecker.t); return (FuncTableAndTable) jjtThis.value;}
+}
+
+void function_list_cont() #void :
+{}
+{
+      function() {} function_list_cont() {}
+      | {}
+}
+
+void function() :
+{String type_id; String name;}
+{
+    type_id = type() name = identifier() <LBR> parameter_list(jjtThis) <RBR> <IS> {CCALChecker.functionTable.put(name, jjtThis); jjtThis.value=name;}
+     decl_list(jjtThis)
+    <BEGIN>
+        statement_block()
+        <RETURN>  (<LBR> ( (expression() <RBR> #retval(1)) | <RBR>)) <SEMIC>
+    <END> {jjtThis.value = new FuncTableAndTable(CCALChecker.functionTable, CCALChecker.t);}
+}
+
+void parameter_list( SimpleNode scope) #parameter_list :
+{}
+{
+      nemp_parameter_list(scope) {}
+    | {}
+}
+
+void nemp_parameter_list(SimpleNode scope) #void:
+{}
+{
+     parameter(scope) ((<COMMA> nemp_parameter_list(scope)) {}| {})
+}
+
+void parameter(SimpleNode scope) #parameter :
+{String name; String type_id;}
+{
+    name = identifier() <COLON> type_id = type() {CCALChecker.t = CCALChecker.t.update(CCALChecker.t, scope, name, type_id);}
+}
+
+String type() #type:
+{Token tok;}
+{
+     (tok = <INTEGER> | tok = <BOOLEAN> | tok = <VOID>) {jjtThis.value = tok.image.toUpperCase(); return (String)jjtThis.value;}
+}
+
+void main_func() #main_func :
+{}
+{
+    <MAIN> <BEGIN> decl_list(jjtThis) statement_block() <END> {}
+}
+
+void statement_block() #statement_block :
+{}
+{
+     statement() statement_block_cotd()
+     | {}
+}
+
+void statement_block_cotd() #void :
+{}
+{
+    statement() statement_block_cotd()
+    | {}
+}
+
+void statement() #void:
+{}
+{
+      identifier() ((<EQUALS> (expression() #assignment_statement(2))) | (<LBR> arg_list() <RBR> #function_call(2))) <SEMIC>
+    | <BEGIN> statement_block() <END> #begin_end_statement(1)
+    | <IF> condition() <BEGIN> statement_block() <END> <ELSE> <BEGIN> statement_block() <END> #if_else_statement(3)
+    | <WHILE> condition() <BEGIN> statement_block() <END> #while_statement(2)
+    | (<_SKIP><SEMIC>) #skip_statement()
+}
+
+
+void expression() :
+{}
+{
+    bool_expression()
+}
+
+void condition()  :
+{}
+{
+    bool_expression()
+}
+
+void bool_expression() #void :
+{}
+{
+     <LBR>((<LBR> (<TILDE> #not())? comp_expression() ( bool_expression_cotd() #bool_expression(3))? <RBR>)|((<TILDE> #not())? comp_expression() ((<RBR> (bool_expression_cotd() #bool_expression(3))?)|(bool_expression_cotd() #bool_expression(3) <RBR>) )))
+    | (<TILDE> #not())? comp_expression() ( bool_expression_cotd() #bool_expression(3))?
+}
+
+void bool_expression_cotd() #void :
+{}
+{
+    bin_bool_op() (comp_expression()|(<LBR>comp_expression()<RBR>))
+}
+
+void comp_expression() #void:
+{}
+{
+    arith_expression() ( comp_op() arith_expression() #comp_expression(3))?
+}
+
+void arith_expression() #void :
+{  }
+{
+    fragment() ( binary_arith_op() fragment() #arith_expression(3))?
+}
+
+void fragment() #fragment:
+{Token tok = null; String id = null;}
+{
+    id = identifier() ((<LBR> arg_list() <RBR> #function_call(2))| {} #var_lookup(1))
+    | <MINUS_SIGN> (id = identifier() ((<LBR> arg_list() <RBR> #function_call(2))| { } #var_lookup(1) )) #negate()
+    | tok = <INTEGER_LITERAL> {jjtThis.value = Integer.parseInt(tok.image);}
+    | <TRUE> {jjtThis.value=new Boolean(true);}
+    | <FALSE> {jjtThis.value=new Boolean(false);}
+}
+
+void binary_arith_op() #binary_arith_op:
+{}
+{
+     jjtThis.value = <PLUS_SIGN>
+    | jjtThis.value = <MINUS_SIGN>
+}
+
+void bin_bool_op() #bin_bool_op:
+{}
+{
+       jjtThis.value = <OR>
+     | jjtThis.value = <AND>
+}
+
+void comp_op() #comp_op :
+{}
+{
+      jjtThis.value = <EQUALITY>
+    | jjtThis.value = <NE>
+    | jjtThis.value = <LT>
+    | jjtThis.value =  <LTE>
+    | jjtThis.value =  <GT>
+    | jjtThis.value = <GTE>
+}
+
+void arg_list() #arg_list:
+{}
+{
+   nemp_arg_list()
+   | {}
+}
+
+void nemp_arg_list() #void :
+{}
+{
+     identifier() (<COMMA> nemp_arg_list())?
+}
+
